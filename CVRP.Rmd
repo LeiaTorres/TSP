@@ -1,0 +1,701 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+setwd("C:/Users/LiaDenisse/Documents/OR and DS/TSP")
+library(Rcpp)
+#  Rcpp::sourceCpp("OR and DS/TSP/functionsC.cpp")
+
+```
+
+Auxiliary functions
+
+```{r}
+##### Auxiliary functions ######
+
+# retrieve the tour sequence from matrix representation starting from "start"
+nodes_in_sequence <-function(matrix, start){
+  s <- c(start)
+  #retrieve the sequence
+  if (max(matrix[start,],na.rm=T)== -Inf) { return (1)} else {
+  while (max(matrix[tail(s,n=1),],na.rm=T) != 0 ){
+    s <- c(s,which.max(matrix[tail(s,n=1),]))
+    if (length(s) > 1 & tail(s,n=1) == start) { break } # end because we have a cycle
+    if(max(matrix[tail(s,n=1),],na.rm=T) == -Inf) { break } #end because the node is not connected to any other node
+  }
+  return(s)
+  }
+} 
+
+# Node after node1
+next_node <- function(tour, node1){
+  return(tour[(which(tour==node1)[1]+1)])
+}
+
+# Node before node1
+previous_node <- function(tour, node1){
+  if (length(which(tour==node1))== 1) {
+    if(which(tour==node1) == 1) { return(NA)} else{
+  return(tour[(which(tour==node1)[1]-1)])}} else {
+    return(tour[(which(tour==node1)[2]-1)])
+  }
+}
+
+# check if a customer is the first or last customer of a tour. Depot: node = 1
+end_customer <- function(tour, customer) {
+  return ( (first_customer(tour,customer)) | (last_customer(tour,customer)))
+}
+
+first_customer <- function(tour, customer) {
+  return ( is.na(previous_node(tour,customer)))
+}
+
+last_customer <- function(tour, customer) {
+  return ( is.na(next_node(tour,customer)) )
+}
+
+# from dataframe df ("customers", "tour_number"), get the tour which customer n belongs to
+get_tour <- function(df,n){
+  tour_num <- df[df$customers == n,]$tour_number
+  return (df[df$tour_number == tour_num,]$customers)
+}
+
+# reverse tour
+rev_tour <- function(tour){
+  rt <- c()
+  for(i in 1:length(tour)){
+    rt[i] <- tour[length(tour)-i+1]
+  }
+  return(rt)
+}
+
+#get total demand of customer in a given tour, cvrp_demand is a df, tour a vector
+get_total_demand_tour <- function(df_demand, tour){
+  demand <- sum(df_demand[df_demand$node %in% tour,]$demand)
+  return(demand)
+}
+
+#get the total distance of tours, depot is node 1, tours in tour_list don't include the depot
+total_distance <- function(tour_list, dist_matrix){
+ # assume depot is node 1
+  ntours <- length(tour_list)
+  distance <- 0
+  for(i in 1:ntours){
+    tour<- c(1,tour_list[[i]],1)
+    distance <- distance + tour_length(dist_matrix, tour)
+  }
+  return(distance)
+}
+
+#reorder a tour so that it starts from node "start"
+reorder_tour <- function(tour,start){
+  if(tour[1] == start){ ordered_tour <- tour} 
+  else {
+ ordered_tour <- c( tour[which(tour==start):length(tour)], tour[2:(which(tour==start))])}
+  
+ return(ordered_tour)
+}
+
+
+# funcion para ajustar clusters y que no separen a los fixed adges
+adjust_clusters <- function(must_link, solution){
+  nclusters <- length(solution[lengths(solution) > 1])
+  adj_solution <- list()
+  node <- c()
+  where <- c()
+  
+  #agregar the end node of the fixed edges
+  for(i in 1:(nclusters)){
+    curr_cluster <- solution[[i]]
+    for(n in 1:(nrow(must_link))){
+      
+      if((must_link[n,1] %in% solution[[i]]) && (!must_link[n,2] %in% solution[[i]])) {
+        
+          curr_cluster <- c(curr_cluster,must_link[n,2])
+          node <- c(node, must_link[n,2])
+          where <- c(where, i)
+      }
+    }
+    adj_solution[[i]] <- curr_cluster
+  }
+  
+  #quitar duplicados
+   for(i in 1:(length(where))){
+     for( c in 1:(nclusters)){
+       if( ((node[i] %in% adj_solution[[c]])) && (where[i] != c) ){
+         adj_solution[[c]] <- adj_solution[[c]][-(which(adj_solution[[c]]==node[i]))]
+      }
+     }
+   }
+  
+  return(adj_solution)
+}
+```
+
+savings Algorithm (Clark & Wright 1964)
+```{r}
+##### Savings algorithm ####
+
+# M - distance matrix (n+1)x(n+1), n customers, 1 depot
+# cvrp_demand - dataframe, columns: node, demand.
+# n = 1 is the depot
+
+savings <- function(M, cvrp_demand, capacity) { 
+
+  # 1. Create the pendulum tours
+  
+  n <- dim(M)[1]
+  customers <- seq(2,n,1) #empezamos de 2 xq ignoramos el depot
+  tour_number <- seq(2,n,1)
+  demand <- cvrp_demand$demand[2:n]
+  X <- data.frame(customers, tour_number, demand)
+  X$cum_demand <- ave(X$demand, X$tour_number, FUN=cumsum)
+  
+  
+  # 2.  For every edge (i,j), i<j, that is not incident with the depot, calculate the saving s(i,j)
+  
+  savings <- data.frame(matrix(ncol=3, nrow=0))
+  
+  for (i in 2:(n-1)) {
+    for(j in (i+1):n){
+      savings <- rbind(savings, c(i,j,M[depot,i]+M[depot,j]-M[i,j]))
+    }
+  }
+  
+  colnames(savings) <- c("node1", "node2", "saving")
+  
+  # 3. Sort all positive savings in order of non-increasing value
+  
+  savings <- savings[order(savings$saving, decreasing = TRUE),]
+  
+  # 4.
+  
+  while (nrow(savings) > 0){
+    
+    #select the first element from savings ordered
+    largest_saving <- savings[1,]
+    n1 <- largest_saving$node1
+    n2 <- largest_saving$node2
+    
+    #connect customers if capacity restriction is not violated
+   
+    # n1 lo haremos last customer en su tour
+    tour1 <- get_tour(X,n1)
+    if(!last_customer(tour1,n1)){
+        tour1 <- rev_tour(tour1)
+    }
+  
+    # n2 lo haremos first customer en su tour
+    tour2 <- get_tour(X,n2)
+    if(!first_customer(tour2,n2)){
+        tour2 <- rev_tour(tour2)
+    }
+  
+    # unir los tours
+    join_tours <- c(tour1,tour2)
+  
+    # partimos la tabla en dos:
+    X_current_tour <- X[(X$customers %in% join_tours),]
+    X_other_tours  <- X[!(X$customers %in% join_tours),]
+    
+    #conservar el orden de join_tour
+    X_current_tour <- X_current_tour[order(factor(X_current_tour$customers,levels=join_tours)),]
+    
+    # de la tabla con los customers en el tour, ponemos a todos los customers en el mismo tour
+    X_current_tour$tour_number <- min(X_current_tour$tour_number)
+    X_current_tour$cum_demand <- cumsum(X_current_tour$demand)
+    total_demand <- tail(X_current_tour$cum_demand,1)
+  
+    # checar the tour capacity
+      
+    if ( total_demand <= capacity) {
+      # juntamos las tablas
+      X <- rbind(X_current_tour, X_other_tours)
+      #if node1 or node2 are no longer end nodes, delete all savings from S that relate to node1   and/or node2
+    if ( !end_customer(join_tours, n1)){
+      savings <- subset(savings, (node1 != n1) & (node2 != n1))
+    }
+    
+    if ( !end_customer(join_tours, n2)){
+      savings <- subset(savings, (node1 != n2) & (node2 != n2))
+    }
+      
+    #delete the savings of first and last element in the new_tour
+      first <- join_tours[1]
+      last <- tail(join_tours,1)
+      savings <- subset(savings, !(node1 == first & node2 == last))
+      savings <- subset(savings, !(node1 == last & node2 == first))
+    }
+    
+    #update savings table
+    
+    savings <- subset(savings, !(node1 == n1 & node2 == n2))
+    
+  }
+  
+  # re-enumerate the tours
+  
+  X$tour_number_order[1] <- 1
+  for(i in 2:(n-1)){
+    if(X$tour_number[i] == X$tour_number[i-1]) {
+    X$tour_number_order[i] <- X$tour_number_order[i-1]} else{
+    X$tour_number_order[i] <- X$tour_number_order[i-1] +1 
+    }
+  }
+
+  #retrieve solution
+  tour_list <- list()
+  ntours <- max(X$tour_number_order)
+  for(i in 1:ntours){
+    trip <- subset(X, tour_number_order == i)$customers
+    tour_list[[i]] <- trip
+  }
+  
+  tour_list[["distance"]] <- total_distance(tour_list,M) #append the total distance at the end of the list of tours
+  
+  return(tour_list)
+  
+} 
+
+```
+
+Sweep Method
+
+
+```{r}
+
+#cvrp: dataframe, columns "node", "demand", "x_coord", "y_coord". (n+1) rows, n customeRS, 1 depot
+#dist_matrix - distance matrix (n+1)x(n+1), N= 1 DEPOT
+#capacity: maximum capacity
+
+sweep <- function(cvrp, capacity, dist_matrix, depot){
+  # Impose a coordinate system on top of the customer nodes with the depot situated at the origin
+  new_origin <- cvrp[depot,]
+  cvrp_sweep <- cvrp
+  cvrp_sweep$x_new <- cvrp$x_coord - new_origin$x_coord
+  cvrp_sweep$y_new <- cvrp$y_coord - new_origin$y_coord
+  
+  # Calculate polar angles
+  cvrp_sweep$polar_angle <- atan2(  -cvrp_sweep$y_new, -cvrp_sweep$x_new) #clock wise
+  cvrp_sweep <- merge(cvrp_sweep, cvrp_demand, by= "node")
+  cvrp_sweep <- cvrp_sweep[ which(cvrp_sweep$node != 1),]
+  
+  # order by increasing polar angles
+  cvrp_sweep <- cvrp_sweep[order(cvrp_sweep$polar_angle, decreasing = TRUE),]
+  
+  # walk around this master tour and partition into smaller tours in such a way that load capacity is not violated
+  
+  current_capacity <- 0
+  n_tour <- 1
+  n <- nrow(cvrp_sweep)
+  
+  for(i in 1:n){
+    current_capacity <- current_capacity + cvrp_sweep[i,]$demand
+    if(current_capacity <= capacity) {
+      cvrp_sweep$tour[i] <- n_tour
+    } else{
+      n_tour <- n_tour+1
+      cvrp_sweep$tour[i] <- n_tour
+      current_capacity <- 0
+    }
+  }
+  
+  #retrieve solution
+  tour_list <- list()
+  ntours <- max(cvrp_sweep$tour)
+  for(i in 1:ntours){
+    trip <- subset(cvrp_sweep, cvrp_sweep$tour == i)$node
+    tour_list[[i]] <- trip
+  }
+  
+  tour_list[["distance"]] <- total_distance(tour_list,M) #append the total distance at the end of the list of tours
+  
+  return(tour_list)
+}
+
+
+
+sweep_depot_dumpsite <- function(cvrp, capacity, dist_matrix, depot, dumpsite){
+  # Impose a coordinate system on top of the customer nodes with the depot situated at the middle point between the depot and the dumpsite
+  
+  new_origin_x <- (cvrp[depot,]$x_coord+cvrp[dumpsite,]$x_coord)/2
+  new_origin_y <- (cvrp[depot,]$y_coord+cvrp[dumpsite,]$y_coord)/2
+  
+  cvrp_sweep <- cvrp
+  cvrp_sweep$x_new <- cvrp$x_coord - new_origin_x
+  cvrp_sweep$y_new <- cvrp$y_coord - new_origin_y
+  
+  # Calculate polar angles
+  cvrp_sweep$polar_angle <- atan2(  -cvrp_sweep$y_new, -cvrp_sweep$x_new) #clock wise
+  #cvrp_sweep <- merge(cvrp_sweep, cvrp_demand, by= "node")
+  cvrp_sweep <- cvrp_sweep[ which(cvrp_sweep$node != c(depot,dumpsite)),]
+  
+  # order by increasing polar angles
+  cvrp_sweep <- cvrp_sweep[order(cvrp_sweep$polar_angle, decreasing = TRUE),]
+  
+  # walk around this master tour and partition into smaller tours in such a way that load capacity is not violated
+  
+  current_capacity <- 0
+  n_tour <- 1
+  n <- nrow(cvrp_sweep)
+  
+  for(i in 1:n){
+    current_capacity <- current_capacity + cvrp_sweep[i,]$demand
+    if(current_capacity <= capacity) {
+      cvrp_sweep$tour[i] <- n_tour
+    } else{
+      n_tour <- n_tour+1
+      cvrp_sweep$tour[i] <- n_tour
+      current_capacity <- 0
+    }
+  }
+  
+  #retrieve solution
+  tour_list <- list()
+  ntours <- max(cvrp_sweep$tour)
+  for(i in 1:ntours){
+    trip <- subset(cvrp_sweep, cvrp_sweep$tour == i)$node
+    tour_list[[i]] <- trip
+  }
+  
+  tour_list[["distance"]] <- total_distance(tour_list,M) #append the total distance at the end of the list of tours
+  
+  return(tour_list)
+}
+
+
+```
+
+
+Split algorithm
+
+```{r}
+#n = number of customers
+#tour: length n
+#demand: vector length n
+#M: matrix dim (n+1)x(n+1), includes distance from the depot to the customers
+#Q: max capacity
+
+split_R <- function(tour, Q, demand, M){
+  
+  # vector with predecessor
+  vector <- split(tour, Q,demand,M) #two trucks version
+  pred <- head(vector, length(vector)-1)+1 #re index
+  distance <- tail(vector,1)
+  
+  # extraction of the solution after split
+    n <- length(pred)-1
+    tour_list <- list()
+    j <- length(tour)
+    while (j != 1){
+      trip <- c()
+      for(k in (max(2,pred[j]+1)):j) {
+        trip <- c(trip, tour[k]) #re-index 
+      }
+      tour_list[[length(tour_list) + 1]] <- trip
+      j <- pred[j]
+    }
+    
+    tour_list[["distance"]] <- distance
+    
+  return(tour_list)
+  
+}
+
+
+split_R_replenish <- function(tour, Q, demand, M,dumpsite, improve, max_imp){
+  
+########## split ###########
+  
+  if(missing(improve)){improve <- FALSE}
+  if(missing(max_imp)){max_imp <- 0}
+  
+  # vector with predecessor
+  vector <- split_replenish(tour, Q,demand,M,dumpsite) #one truck, several trips
+  pred <- head(vector, length(vector)-1)+1 #re index
+  distance <- tail(vector,1)
+  
+  # extraction of the solution after split
+    n <- length(pred)-1
+    tour_list <- list()
+    j <- length(tour)
+    while (j != 1){
+      trip <- c()
+      for(k in (max(2,pred[j]+1)):j) {
+        trip <- c(trip, tour[k]) #re-index 
+      }
+      tour_list[[length(tour_list) + 1]] <- trip
+      j <- pred[j]
+    }
+    
+    tour_list[["distance"]] <- distance
+    
+    
+########## improve ###########
+    
+  if(improve){
+    
+    dis <- 0
+    trips <- 1:(length(tour_list)-1)
+      
+     for(i in trips){ #para cada vehiculo, tratamos de mejorar sus viajes
+        
+        if( i == length(trips)) { #el último trip en la lista es el primero, el que parte del depot
+          
+            subtour <- c(1,tour_list[[i]],dumpsite,1)
+            subtour_3opt <- ThreeOpt_R(subtour,M,max_improvements = max_imp)
+            subtour_3opt <- reorder_tour(subtour_3opt,1)
+            subtour_3opt <- subtour_3opt[1:(length(subtour)-1)]
+            dis <- dis + tour_length(M,subtour_3opt)
+            subtour_3opt <- subtour_3opt[2:(length(subtour_3opt)-1)] # tour
+            }
+        else {  # los demás trips de la lista parten del dumpsite
+           subtour <- c(dumpsite,tour_list[[i]],dumpsite)
+           subtour_3opt <- ThreeOpt_R(subtour,M,max_improvements = max_imp)
+           subtour_3opt <- reorder_tour(subtour_3opt,dumpsite)
+           dis <- dis + tour_length(M,subtour_3opt) 
+           subtour_3opt <- subtour_3opt[2:(length(subtour_3opt)-1)]
+        }
+        
+        tour_list[[i]] <- subtour_3opt
+      } #end for
+    
+        dis <- dis + M[dumpsite,1]
+        tour_list[["distance"]] <- dis
+  }
+    
+  return(tour_list)
+  
+}
+
+
+split_R_replenish_time <- function(giant_tour, Q, demand, M,dumpsite, collection_time, matrix_time, max_time, improve, max_imp){
+  
+################ split algorithm #######################
+  tour <-giant_tour
+  v <- 1
+  vehicles <- list()
+  ntotal <- length(giant_tour)
+  continuar <- TRUE
+  time_back_depot <- matrix_time[dumpsite,1]
+  distance_back_depot <- M[dumpsite,1]
+  
+
+while(continuar){
+ 
+  # run the split algorithm
+  
+  list <- split_replenish_time(tour, Q,demand,M,dumpsite,collection_time, matrix_time)
+  vector <- list[[1]]
+  times <- list[[2]]
+  distances <- list[[3]]
+  pred <- vector +1 #re index
+  
+  # check the times and define last customer
+  
+  vbool <- times < (max_time-time_back_depot)
+  if(sum(vbool) < length(vbool)) {
+    last_customer <- which(vbool==0)[1] -1
+  } else {
+    last_customer <- sum(vbool)
+  }
+  
+  # adjust last customer because of forbidden edges (large penalties = 1000)
+  
+  while(distances[last_customer]>1000) { #we are using a forbidden edge
+    last_customer <- last_customer-1     # nos recorremos en la ruta
+  }
+  
+  # subset the solution
+  
+  pred <- pred[1:last_customer]
+  tour <- tour[1:last_customer]
+  
+  # extraction of the solution after split
+  
+    n <- length(pred)-1
+    tour_list <- list()
+    j <- length(tour)
+    while (j != 1){
+      trip <- c()
+      for(k in (max(2,pred[j]+1)):j) {
+        trip <- c(trip, tour[k]) #re-index 
+      }
+      tour_list[[length(tour_list) + 1]] <- trip
+      j <- pred[j]
+    }
+    
+    tour_list[["distance"]] <- distances[last_customer] + distance_back_depot
+    tour_list[["time"]] <- times[last_customer] + time_back_depot
+    
+    # assign the solution to current vehicle
+    
+    vehicles[[v]] <- tour_list
+  
+    # are we done?
+    
+    x<- which(giant_tour == tour[last_customer])
+    if(which(giant_tour == tour[last_customer])[length(x)] == ntotal) { 
+      continuar <- FALSE} else{
+      v <- v+1 # we need another vehicle
+      tour <- c(1,giant_tour[(which(giant_tour == tour[last_customer])[length(x)]+1):ntotal])
+    }
+    
+    
+} # end while
+
+  vehicles[["nvehicles"]] <- v
+  
+################ improve solution #######################
+  
+  if(missing(improve)){improve <- FALSE}
+  if(missing(max_imp)){max_imp <- 0}
+  
+  if(improve){
+    
+    
+    for (j in 1:v){ #iteramos en las rutas de cada vehiculo
+      
+      tour_list <- vehicles[[j]]
+      trips <- 1:(length(tour_list)-2) #menos dos x la distancia y el tiempo
+      dis <- 0
+      time <- 0
+        
+      for(i in trips){ #para cada vehiculo, tratamos de mejorar sus viajes
+        
+        if( i == length(trips)) { #el último trip en la lista es el primero, el que parte del depot
+          
+            subtour <- c(1,tour_list[[i]],dumpsite,1)
+            subtour_3opt <- ThreeOpt_R(subtour,M,max_improvements = max_imp)
+            subtour_3opt <- reorder_tour(subtour_3opt,1)
+            subtour_3opt <- subtour_3opt[1:(length(subtour)-1)]
+            dis <- dis + tour_length(M,subtour_3opt)
+            time <- time + tour_time(matrix_time,collection_time,subtour_3opt) # depot - tour - dumpsite
+            subtour_3opt <- subtour_3opt[2:(length(subtour_3opt)-1)] # tour
+            }
+        else {  # los demás trips de la lista parten del dumpsite
+           subtour <- c(dumpsite,tour_list[[i]],dumpsite)
+           subtour_3opt <- ThreeOpt_R(subtour,M,max_improvements = max_imp)
+           subtour_3opt <- reorder_tour(subtour_3opt,dumpsite)
+           dis <- dis + tour_length(M,subtour_3opt)
+           time <- time + tour_time(matrix_time,collection_time,subtour_3opt) - collection_time[dumpsite] 
+           subtour_3opt <- subtour_3opt[2:(length(subtour_3opt)-1)]
+        }
+        
+        tour_list[[i]] <- subtour_3opt
+      } #end for
+      
+        dis <- dis + M[dumpsite,1]
+        time <- time + matrix_time[dumpsite,1]
+        
+        tour_list[["distance"]] <- dis
+        tour_list[["time"]] <- time
+        vehicles[[j]] <- tour_list
+    } #end for
+  }#end if improve
+  
+  return(vehicles)
+  
+}
+
+
+
+
+```
+
+Plot giant tour
+```{r}
+library(dplyr)
+library(ggplot2)  
+
+#coordinates, dataframe column names x_coord, y_coord. Node 1 is the depot
+plot_tour <- function(coordinates, tour, labels){
+  
+  if(missing(labels)){labels = TRUE}
+
+  m <- coordinates[tour %>% as.numeric,]
+  m <- data.frame(x = m$x_coord[1:(nrow(m) -1)], 
+                  y = m$y_coord[1:(nrow(m) -1)],
+                  xend = m$x_coord[2:nrow(m)],
+                  yend = m$y_coord[2:nrow(m)])
+  plot <- ggplot(data = coordinates, aes(x = x_coord, y =y_coord)) + geom_point() +
+             geom_point(data = coordinates[1,], aes(x = x_coord, y =y_coord), colour= "red") + #depot
+             geom_segment(data = m, aes(x = x, xend = xend, y = y, yend = yend)) 
+  if(labels) { plot <- plot + geom_text(label=rownames(coordinates), nudge_x = 2, nudge_y = 2, check_overlap = T)}
+  
+  return(plot)
+}
+
+
+      
+```
+
+Plot tours cvrp
+
+```{r}
+library(RColorBrewer)
+#coordinates, dataframe column names x_coord, y_coord. Node 1 is the depot
+plot_cvrp_tour <- function(cvrp,solution, dumpsite, labels, trips_to_plot, nodes_to_avoid, segments, colors){
+  
+  total_trips <- length(solution[lengths(solution) > 1])
+  if(missing(dumpsite)){ dumpsite <- 1}
+  if(missing(labels)){labels <- TRUE}
+  if(missing(trips_to_plot)){ trips_to_plot <- 1:(total_trips) }
+  if(missing(nodes_to_avoid)){nodes_to_avoid <- 0}
+  if(missing(segments)){ segments <- TRUE}
+  if(missing(colors)){
+    g <- scale_fill_brewer(palette="Dark2")
+    colors <- g$palette(total_trips)
+  }
+  
+  if(length(nodes_to_avoid) == 1 & sum(nodes_to_avoid == 0)){
+  plot <- ggplot(data = cvrp, aes(x = x_coord, y =y_coord)) + geom_point() +
+          geom_point(data = cvrp[1,], aes(x = x_coord, y =y_coord), colour= "red", size=1) 
+  } else {
+   plot <- ggplot(data = cvrp[-nodes_to_avoid,], aes(x = x_coord, y =y_coord)) + geom_point() 
+  }
+  if(labels) { plot <- plot + geom_text(label=rownames(cvrp), nudge_x = 2, nudge_y = 2, check_overlap = T) }
+  
+  for(i in trips_to_plot){
+    
+    if( i == ((total_trips))) {   subtour <- c(1,solution[[i]],dumpsite) }
+    else { 
+       if(i == 1) {
+       subtour <- c(dumpsite,solution[[i]],dumpsite, 1)} else{
+       subtour <- c(dumpsite,solution[[i]],dumpsite)
+       }
+    }
+    
+    if(length(nodes_to_avoid) == 1 & sum(nodes_to_avoid == 0)) {
+      subtour <- subtour } else { 
+    subtour <- subtour[-which(subtour %in% nodes_to_avoid)]
+    }
+    m <- cvrp[subtour %>% as.numeric,]
+    
+    if(segments) {
+      m <- data.frame(x = m$x[1:(nrow(m) -1)], 
+                    y = m$y[1:(nrow(m) -1)],
+                    xend = m$x[2:nrow(m)],
+                    yend = m$y[2:nrow(m)])
+      
+    plot <- plot + geom_segment(data = m, aes(x = x, xend = xend, y = y, yend = yend), color = colors[i])}
+    else {
+      
+      m <- data.frame(x = m$x[1:(nrow(m))], 
+                    y = m$y[1:(nrow(m))])
+      
+      plot <- plot + geom_point(data = m, aes(x = x, y = y), color = colors[i])
+      
+    }
+  
+  }
+  
+  
+  
+  return(plot)
+}
+          
+```
