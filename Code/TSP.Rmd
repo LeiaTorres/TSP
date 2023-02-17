@@ -1,0 +1,677 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+#rm(list = ls())
+setwd("C:/Users/LiaDenisse/Documents/OR and DS/TSP")
+library(Rcpp)
+#Rcpp::sourceCpp("OR and DS/TSP/functionsC.cpp")
+```
+
+TSP problem
+
+Define useful functions
+```{r}
+
+distance_att <- function(df, i, j){
+  f1 <- as.numeric(df[i,][1]) - as.numeric(df[j,][1])
+  f2 <- as.numeric(df[i,][2]) - as.numeric(df[j,][2])
+  xdist <- ((f1*f1) + (f2*f2))/10
+  xdist <- sqrt(xdist)
+  tdist <- round(xdist)
+  if(tdist < xdist) {dist <- tdist + 1}
+  else {dist <- tdist}
+  return(dist)
+}
+
+
+distance_inf <- function(tsp, point1, point2){
+  if(tsp[point1,point2] == 0) { return(1000)} else{
+    if(tsp[point1,point2] == 0.0001) {return(0)} else{
+       return(tsp[point1,point2])}}
+}
+
+distance <- function(tsp, point1, point2){
+       return(tsp[point1,point2])
+}
+
+tour_to_df <- function(dist_matrix, tour){
+  n <- length(tour)
+  df <- data.frame(matrix(ncol = 3, nrow = (n-1)))
+  colnames(df) <- c('from', 'to', 'distance')
+  for(i in 1:(n-1)){
+    df$from[i] <- tour[i]
+    df$to[i] <- tour[i+1]
+    df$distance[i] <- dist_matrix[tour[i], tour[i+1]]
+  }
+  return(df)
+}
+
+path_length <- function(tsp, path){
+  if (length(path) == 1) { return (0)}
+  else {
+    start_node <- path[1]
+    next_node <- path[-1][1]
+    path <- path[-1]
+    return (distance(tsp,start_node,next_node)+path_length(tsp,path))
+  }
+}
+
+#tour_length( distance matrix, tour) C++ function
+
+#nearest_neighbor( distance matrix, tour) C++ function
+
+furthest_neighbor <- function(tsp,  current_city, untraveled_cities) {
+  fn <- 0
+  max_dist <- 0
+  for (city in untraveled_cities) {
+    if (distance(tsp,current_city,city) > max_dist) {
+      fn <- city
+      max_dist <- distance(tsp,current_city,city)
+    } 
+  }
+  return (fn)
+}
+
+#return position (i,j) of minimum element in a matrix
+min_matrix <- function(M){
+  return (arrayInd(which.min(M),dim(M)))
+}
+
+# total time: time_matrix a matrix, collection and tour vectors
+tour_time <- function(time_matrix, collection, tour){
+  traveling_time <- path_length(time_matrix, tour)
+  collection_time <- sum(collection[tour])
+  return(traveling_time + collection_time)
+}
+
+#reorder a tour so that it starts from node "start"
+reorder_tour <- function(tour,start){
+  if(tour[1] == start){ ordered_tour <- tour} 
+  else {
+ ordered_tour <- c( tour[which(tour==start):length(tour)], tour[2:(which(tour==start))])}
+  
+ return(ordered_tour)
+}
+
+# try to find a tour using the nodes in the given cluster, by trying different construction heuristcs and improvement heuristics. Output: best tour found (the more feasible tour, meaning, the one with the least number of forbidden edges) + TRUE or FALSE stating whether the resulting tour is feasible.
+
+
+
+is_initial_tour_feasible <- function(solution, cluster, first, M, dumpsite){
+  if(missing(first)){first <- FALSE}
+
+  if(first) {
+    st <- c(1,solution[[cluster]],dumpsite)
+    st<- st[order(st)]
+    M1 <- M[st,st]
+  } else {
+    st <- c(dumpsite,solution[[cluster]])
+    st<- st[order(st)]
+    M1 <- M[st,st]
+  }
+  
+  tour_options <- list()
+  
+  if(first){
+  nn1<- nearest_neighbor_tour_start(M1,1) 
+  tour_options[[1]] <- st[nn1]
+  } else {
+  
+  nn1<- nearest_neighbor_tour_start(M1,dim(M1)[1]) 
+  tour_options[[1]] <- st[nn1]  
+  }
+  
+  gr1<- greedy_algorithm_tour(M1) 
+  tour_options[[2]] <- st[gr1]
+  
+  ni1<- greedy_algorithm_tour(M1) 
+  tour_options[[3]] <- st[ni1]
+  
+   min <- Inf
+  for(i in 1:3){
+    if( tour_length(M,tour_options[[i]])< min){
+      min <- tour_length(M,tour_options[[i]])
+      choosen_tour <- tour_options[[i]]
+    }
+  }
+  
+  i2opt <- improvement_2opt(M,choosen_tour, asymmetric = TRUE)
+  i3opt <- ThreeOpt_R_greedy(i2opt,M,max_improvements = 50)
+  
+  if(first){
+    tour <- reorder_tour(i3opt,1)} else {
+    tour <- reorder_tour(i3opt,dumpsite)
+  }
+  
+  res <- list()
+  res[[1]] <- tour
+  if(tour_length(M,tour) < 1000) {
+    res[[2]] <- TRUE
+  } else {
+    res[[2]] <- FALSE
+  }
+  
+  return(res)
+
+}
+
+# if no feasible tour is found, try this. This will add nodes to the initial set of nodes until a feasible tour can be constructed by using nn algorithm. 
+
+
+
+
+make_tour_feasible <- function(dist_matrix, set_of_nodes, first){
+  continuar <- TRUE
+  nadd <- 0
+  M_size <- dim(dist_matrix)[1]
+  
+  while(continuar){
+  
+  add <- nearest_insertion(dist_matrix,set_of_nodes)
+  nadd <- nadd + 1
+  set_of_nodes <- c(set_of_nodes,add)
+  set_of_nodes<- set_of_nodes[order(set_of_nodes)]
+  M1 <- dist_matrix[set_of_nodes,set_of_nodes]
+  
+  nn1<- nearest_neighbor_tour_start(M1,1) 
+  nn <- set_of_nodes[nn1]
+  tour_length(dist_matrix,nn) 
+  
+  if ((tour_length(dist_matrix,nn) < 1000) || (length(unique(nn)) == M_size )) { continuar <- FALSE}
+  }
+    return(nn)
+}
+
+
+make_tour_feasible2 <- function(dist_matrix, set_of_nodes, dumpsite, first, centroid){
+  continuar <- TRUE
+  nadd <- 0
+  M_size <- dim(dist_matrix)[1]
+  all_nodes <- seq(1:M_size)
+  other_nodes <- all_nodes[!all_nodes %in% c(set_of_nodes,1,dumpsite)]
+  
+  if(first) { other_nodes <- c(other_nodes,1)} else {
+    other_nodes <- c(other_nodes,dumpsite)
+  }
+  
+  while(continuar){
+  
+  add <- nearest_neighbor(dist_matrix,centroid,other_nodes)
+  nadd <- nadd + 1
+  set_of_nodes <- c(set_of_nodes,add)
+  set_of_nodes<- set_of_nodes[order(set_of_nodes)]
+  M1 <- dist_matrix[set_of_nodes,set_of_nodes]
+  
+  if(first) {  nn1<- nearest_neighbor_tour_start(M1,1) } else{
+    nn1<- nearest_neighbor_tour_start(M1,dumpsite)
+  }
+  nn <- set_of_nodes[nn1]
+  tour_length(dist_matrix,nn) 
+  
+  if ((tour_length(dist_matrix,nn) < 1000) || (length(unique(nn)) == M_size )) { continuar <- FALSE}
+  }
+    return(nn)
+}
+
+
+
+```
+
+
+Nearest neighbor tour: constructs a tour through all nodes in a TSP by following the nearest neighbor heuristic
+```{r}
+nearest_neighbor_tour_start<- function(tsp, start){
+  
+  nn_path <- start
+  current_node <- start
+  all_nodes <- seq(1,dim(tsp)[1],1) #list all nodes
+  nodes_to_visit <- all_nodes[!(all_nodes %in% start)] #all nodes except start node
+  
+  while (length(nodes_to_visit)>0) {
+    current_node <- nearest_neighbor(tsp,current_node,nodes_to_visit)
+    nn_path <- c(nn_path,current_node)
+    nodes_to_visit <- nodes_to_visit[!(nodes_to_visit %in% current_node)] 
+  }
+  return (c(nn_path,start))
+}
+
+repetitive_nearest_neighbor_tour <- function(tsp){
+  
+  all_nodes <- seq(1,dim(tsp)[1],1) #list all nodes
+  min_length <- Inf
+  tour <- 0
+  for (node in all_nodes){
+    #current_length <- path_length(tsp,nearest_neighbor_tour_start(tsp,node))
+    current_length <- tour_length(tsp,nearest_neighbor_tour_start(tsp,node))
+    if(current_length < min_length) {
+      tour <- nearest_neighbor_tour_start(tsp,node)
+      min_length <- current_length }
+  }
+  return (tour)
+}
+
+```
+Furthest neighbor tour: constructs a tour through all nodes in a TSP by following the furthest neighbor heuristic
+```{r}
+furthest_neighbor_tour_start<- function(tsp, start){
+  
+  nn_path <- start
+  current_node <- start
+  all_nodes <- seq(1,dim(tsp)[1],1) #list all nodes
+  nodes_to_visit <- all_nodes[!(all_nodes %in% start)] #all nodes except start node
+  
+  while (length(nodes_to_visit)>0) {
+    current_node <- furthest_neighbor(tsp,current_node,nodes_to_visit)
+    nn_path <- c(nn_path,current_node)
+    nodes_to_visit <- nodes_to_visit[!(nodes_to_visit %in% current_node)] 
+  }
+  return (c(nn_path,start))
+}
+  
+repetitive_furthest_neighbor_tour <- function(tsp){
+  
+  all_nodes <- seq(1,dim(tsp)[1],1) #list all nodes
+  min_length <- Inf
+  tour <- 0
+  for (node in all_nodes){
+    #current_length <- path_length(tsp,furthest_neighbor_tour_start(tsp,node))
+     current_length <- tour_length(tsp,furthest_neighbor_tour_start(tsp,node))
+    if(current_length < min_length) {
+      tour <- furthest_neighbor_tour_start(tsp,node)
+      min_length <- current_length }
+  }
+  return (tour)
+}
+
+```
+
+Insertion algorithms. Start with a tour consisting of two nodes and then choose in each step a node k not yet on the tour. This node is inserted into the existing tour between two consecutive nodes i, j such that the insertion cost is minimized. The insertion algorithms differ in the way the node to be inserted is chosen:
+* Nearest insertion.
+
+```{r}
+nearest_insertion_tour <- function(tsp,current_tour, max_length){
+  
+  if(missing(max_length)){ max_length <- Inf }
+  
+  if(missing(current_tour)) {
+    n <- dim(tsp)[1]
+    C<- tsp  # distances matrix
+    for (i in 1:n){
+      C[i,i] <- Inf
+    }
+     current_tour <- min_matrix(C)
+  }
+  
+  
+  start <- current_tour[1]
+  n <- length(current_tour)
+  all_nodes <- seq(1,dim(tsp)[1],1) #list all nodes
+  max <- length(all_nodes)
+  max <- min(max, max_length)
+  
+  while( n < max){
+  
+    insertion_cost <- c()
+    
+    # node k is to be inserted
+    k <- nearest_insertion(tsp,current_tour)
+    
+    # get insertion cost between each consecutive nodes i, j
+    for (i in current_tour[1:n-1]){             
+        j <- current_tour[match(i,current_tour)+1]
+        insertion_cost <- c(insertion_cost, distance(tsp,i,k) + distance(tsp,k,j)-distance(tsp,i,j))
+    }
+    
+    #choose best insertion position (which minimizes distance)
+    insert_k_pos <- which.min(insertion_cost)+1
+    
+    #update current tour
+    current_tour <- c(current_tour[1:insert_k_pos-1],k,current_tour[insert_k_pos:n])
+    n <- length(current_tour)
+    
+  }
+  
+  return (c(current_tour,start))
+    
+}
+
+```
+
+Greedy Algorithm
+
+```{r}
+
+#### Auxiliary functions ####
+
+#return position (i,j) of minimum element in a matrix
+min_matrix <- function(M){
+  return (arrayInd(which.min(M),dim(M)))
+}
+
+#return position (i,j) of maximum element in a matrix
+max_matrix <- function(M){
+  return (arrayInd(which.max(M),dim(M)))
+}
+
+# change vector (i,j) to (j,i)
+flip_pair <- function(pair){
+  new_pair <- matrix(nrow=1,ncol=2)
+  new_pair[1] <- pair[2]
+  new_pair[2] <- pair[1]
+  return(new_pair)
+}
+
+# retrieve the sequence from matrix representation starting from "start"  
+nodes_in_sequence <-function(matrix, start){
+  s <- c(start)
+  #retrieve the sequence
+  if (max(matrix[start,],na.rm=T)== -Inf) { return (1)} else {
+  while (max(matrix[tail(s,n=1),],na.rm=T) != 0 ){
+    s <- c(s,which.max(matrix[tail(s,n=1),]))
+    if (length(s) > 1 & tail(s,n=1) == start) { break } # end because we have a cycle
+    if(max(matrix[tail(s,n=1),],na.rm=T) == -Inf) { break } #end because the node is not connected to any other node
+  }
+  return(s)
+  }
+} 
+
+#is the sequence a cycle  ?
+is_cycle <-function(matrix, start){
+   s <- nodes_in_sequence(matrix,start)
+   return(tail(s,n=1) == start)
+} 
+
+#### greedy algorithm ####
+greedy_algorithm_tour <- function(tsp) {
+  
+    n <- dim(tsp)[1]
+    X <- matrix(nrow=n, ncol=n) #tour representation in a matrix, it will be initialized with NA
+    C<- tsp  # distances matrix
+    iteration <- 0
+    
+    for (i in 1:n){
+      C[i,i] <- Inf
+    }
+     start_node <- min_matrix(C)[1] 
+     
+    while (sum(is.na(X)) > 0){
+      
+      # find the minimum element in C
+      min <- min_matrix(C) # min = (i,j)
+      
+      # temporary connect i to j
+      X[min] <- 1
+      
+       #check that no cycles occur until we have connected all nodes
+     
+      oldw <- getOption("warn")
+      options(warn = -1)
+      if (is_cycle(X,min[1]) & length(nodes_in_sequence(X,min[1])) != n+1) {
+      options(warn = oldw)  
+         X[min] <- 0
+         C[min] <- Inf
+      } else {
+        
+        # update X and C matrices accordingly
+        
+        X[min] <- 1            #X[i,j] = 1
+        C[min] <- Inf
+        X[flip_pair(min)] <- 0 #X[j,i] = 0
+        C[flip_pair(min)] <- Inf
+        
+        for(i in 1:n) {
+          if(i != min[1]) {  X[i,min[2]] <- 0 
+                             C[i,min[2]] <- Inf  }
+          if(i != min[2]) {  X[min[1],i] <- 0
+                             C[min[1],i] <- Inf}
+        }
+      }
+      iteration <- iteration + 1
+    }
+     
+    #retrieve tour
+    return(nodes_in_sequence(X,start_node))
+}
+
+#greedy_algorithm_tour(tsp2)
+```
+
+
+2-Opt algorithm.
+```{r}
+
+############################### Auxiliary functions######################################
+
+#  matrix_tour C++ function
+
+#  TwoOptSwap C++ function
+
+# Is a pair of edges consecutive in a given tour?
+consecutive_edges <- function(tour, edge1, edge2){
+  return ( which(tour==edge1[1])[1] == which(tour==edge2[2])[1] | which(tour==edge1[2])[1] == which(tour == edge2[1])[1])
+}
+
+# Node after node1
+next_node <- function(tour, node1){
+  return(tour[(which(tour==node1)[1]+1)])
+}
+
+# Node before node1
+previous_node <- function(tour, node1){
+  if (length(which(tour==node1))== 1) {
+  return(tour[(which(tour==node1)[1]-1)])} else {
+    return(tour[(which(tour==node1)[2]-1)])
+  }
+}
+
+# neighborhood of an edge, if edge is (N(i),N(i+1)), neighborhood is (N(i-1),N(i),N(i+1),N(i+2))
+# i index, N(i) element in the position i of the tour
+
+neighborhood <- function(tour, edge){
+  n<- length(tour)
+  pos1 <- which(tour==as.numeric(edge[1]))
+    pos2 <- which(tour==as.numeric(edge[2]))
+    if ( length(pos1) == 2) {
+      pos1_1  <- pos1[1]
+      pos1_2 <- pos1[2]} else {
+      pos1_1 <- pos1
+      pos1_2 <- 2*n}
+    if ( length(pos2) == 2) {
+       pos2_1  <- pos2[1]
+       pos2_2 <- pos2[2]} else {
+      pos2_1 <- pos2
+      pos2_2 <- 2*n}
+    
+    previous_node_pos <- which(tour == previous_node(tour,as.numeric(edge[1])))[1]
+    next_node_pos <- which(tour== next_node(tour,as.numeric(edge[2])))[1]
+    return(c(pos1_1, pos1_2, pos2_1, pos2_2, previous_node_pos, next_node_pos))
+}
+
+
+############################## 2-opt algorithm ################################
+
+#it starts with a given tour
+
+improvement_2opt <- function(tsp, current_tour, asymmetric, greedy) {
+  
+  if(missing(asymmetric)) {
+    asymmetric <- FALSE
+  }
+  if(missing(greedy)){
+    greedy <- TRUE
+  }
+  
+  df <- tour_to_df(tsp,current_tour)
+  df <- df[order(-df$distance),]  # descending order by distance
+  df <- subset(df, distance != 0) #reduce the search avoiding edges with 0 distance
+  n <- length(current_tour)-1
+  starting_min_distance <- tour_length(tsp, current_tour)
+  min_distance <- starting_min_distance 
+  
+  #Vector F and B: cumulative sum of distances when walking the tour forward and backward
+  #initialize F and V vector
+  
+  if(asymmetric){
+  f <- cumsumF(tsp,current_tour)
+  b <- cumsumB(tsp,current_tour)
+  }
+  
+  it <- 0
+  
+  improvements <- 0
+  unsucessfull_search <- 0
+  
+  continue <- TRUE #boolean flag
+  
+  while(continue){
+    
+    #start with the largest edge in the current tour
+    edge1 <- df[1,c("from","to")]
+    df <- df[-1,] #to drop first row
+    
+    it2 <- 0
+    neighborhood_edge1 <- neighborhood(current_tour,edge1)
+    
+    #search for a better tour
+    if(asymmetric){
+      if(greedy){
+         new_tour <- TwoOpt_New_Tour_A(neighborhood_edge1, current_tour, tsp, min_distance, f, b)
+      } else{
+        new_tour <- TwoOpt_New_Tour_A_v2(neighborhood_edge1, current_tour, tsp, min_distance, f, b)
+      }
+    } else{
+    new_tour <- TwoOpt_New_Tour(neighborhood_edge1, current_tour, tsp, min_distance)
+    }
+    #improvement?
+    if ((length(new_tour) == (n+2)) && (new_tour[n+2] >1e-10 )){  #new_tour[n+2] is the gain, if there's any
+      current_tour <- new_tour[1:(n+1)]
+      min_distance <- min_distance - new_tour[n+2]
+      
+      df <- tour_to_df(tsp,current_tour)
+      df <- df[order(-df$distance),]  # descending order by distance
+      df <- subset(df, distance != 0) #reduce the search avoiding edges with 0 distance
+      
+      if(asymmetric){
+        f <- cumsumF(tsp,current_tour)
+        b <- cumsumB(tsp,current_tour) 
+      }
+      
+      improvements <- improvements + 1
+      cat("Number of improvements: ", improvements, "\n")
+      cat("Tour distance: ",min_distance, "\n" )
+      #unsucessfull_search <- 0
+    } else {
+      unsucessfull_search <- unsucessfull_search + 1
+    }
+    
+    #stopping criterion, when distance is improved in at least 30% abs(min_distance-starting_min_distance)/starting_min_distance > .3 |
+      if (  nrow(df)== 0) {
+         cat("unsucessfull search: ",unsucessfull_search , "\n")
+         continue = FALSE }
+  
+  }
+    return(current_tour)
+}
+
+```
+
+3 opt
+
+```{r}
+
+# exhaustive search
+ThreeOpt_R<- function (current_tour, dis_matrix, greedy, max_improvements, min_max_gain){
+  
+  if (missing(greedy)) { greedy <- FALSE}
+  if (missing(max_improvements)) { max_improvements <- Inf}
+  if(missing(min_max_gain)) { min_max_gain <- 0}
+  
+  gain <- 1
+  improvements <- 0
+  
+  while((gain > 1e-10) & (improvements < max_improvements)){
+    
+    if(!greedy) {
+      v <- ThreeOpt_BestSwap(current_tour,dis_matrix)
+    } else {
+      v <- ThreeOpt_GreedySwap(current_tour,dis_matrix, min_max_gain = min_max_gain)  
+    }
+    current_tour <- v[-length(v)]
+    gain <- v[length(v)]
+    improvements <- improvements + 1
+  }
+  return(current_tour)
+}
+
+# greedy version of 3 opt
+ThreeOpt_R_greedy <- function(current_tour, dis_matrix, max_improvements, nodes_to_avoid){
+  
+  if(missing(nodes_to_avoid)){nodes_to_avoid <- NULL}
+  df <- tour_to_df(dis_matrix,current_tour)
+  df <- df[order(-df$distance),]  # descending order by distance
+  df<-  subset(df, ! from %in% nodes_to_avoid)
+  df<-  subset(df, ! to %in% nodes_to_avoid)
+  df <- subset(df, distance != 0) #reduce the search avoiding edges with 0 distance
+  
+  improvements <- 0
+  continue <- TRUE
+  
+  while(continue){
+    
+    current_tour <- reorder_tour(current_tour,df$from[1]) #start from the largest edge
+    df <- df[-1,]
+    
+    #search for a better tour
+    v <- ThreeOpt_BestSwap_start(current_tour,dis_matrix) #this function returns the best tour obtained by swapping the first edge of the tour and 2 other edges
+    gain <- v[length(v)]
+    
+    if(gain > 1e-10){ #if there is an improvement
+      improvements <- improvements + 1
+      current_tour <- v[-length(v)] #update current tour
+      df <- tour_to_df(dis_matrix,current_tour)
+      df <- df[order(-df$distance),]  # descending order by distance
+      df<-  subset(df, ! from %in% nodes_to_avoid)
+      df<-  subset(df, ! to %in% nodes_to_avoid)
+      df <- subset(df, distance != 0) #reduce the search avoiding edges with 0 distance
+      }
+    
+    #stopping criterion
+    if(nrow(df)== 0 | improvements == max_improvements){ continue <- FALSE
+     cat("improvements: ",improvements , "\n")}
+  }
+  return(current_tour)
+}
+
+```
+
+
+Plot Tour 
+
+```{r}
+library(dplyr)
+library(ggplot2)  
+
+plot_tour <- function(coordinates, tour,  labels){
+  
+  if(missing(labels)){ labels = FALSE}
+
+  m <- coordinates[tour %>% as.numeric,]
+  m <- data.frame(x = m$x_coord[1:(nrow(m) -1)], 
+                  y = m$y_coord[1:(nrow(m) -1)],
+                  xend = m$x_coord[2:nrow(m)],
+                  yend = m$y_coord[2:nrow(m)])
+ p <- ggplot(data = coordinates, aes(x = x_coord, y =y_coord)) + geom_point() +
+             geom_segment(data = m, aes(x = x, xend = xend, y = y, yend = yend)) 
+ 
+ if(labels) {
+   p <- p + geom_text(label=rownames(coordinates), nudge_x = 2, nudge_y = 2, check_overlap = T)
+ }
+  p
+}
+```
+
+
+
+
